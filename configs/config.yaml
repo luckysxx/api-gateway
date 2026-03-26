@@ -1,0 +1,18 @@
+server:
+  port: "8000"
+
+routes:
+  user_platform: "http://localhost:9091"
+  go_note: "http://localhost:8080"
+
+jwt:
+  secret: "user_platform_secret_key" # 和 user-platform 对齐的解析秘钥
+
+redis:
+  addr: "localhost:6379"
+  password: "123456"
+  db: 0
+
+otel:
+  jaeger_endpoint: "localhost:4318"
+  service_name: "api-gateway"
