@@ -2,42 +2,74 @@ package main
 
 import (
 	"context"
-	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
 	"github.com/luckysxx/common/logger"
 	"github.com/luckysxx/common/metrics"
 	"github.com/luckysxx/common/otel"
+	"github.com/luckysxx/common/ratelimiter"
+	"github.com/luckysxx/common/redis"
 
 	"api-gateway/internal/auth"
 	"api-gateway/internal/config"
+	"api-gateway/internal/grpcclient"
+	"api-gateway/internal/handler"
 	"api-gateway/internal/middleware"
-	"api-gateway/internal/proxy"
+	"api-gateway/internal/middleware/ratelimit"
+	"api-gateway/internal/restclient"
 
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
-// ReverseProxyWrapper 封装原生反向代理为 Gin 兼容的 HandlerFunc
-func ReverseProxyWrapper(targetUrl string) gin.HandlerFunc {
-	// 复用我们在 proxy.go 写的代理引擎
-	p := proxy.NewReverseProxy(targetUrl)
-	return func(c *gin.Context) {
-		// 一旦匹配，立刻用官方纯 C 语言底层的 proxy 接管 HTTP IO
-		p.ServeHTTP(c.Writer, c.Request)
-	}
-}
-
 func main() {
-	// 1. 规范化配置
+	// 规范化配置
 	cfg := config.LoadConfig()
 
-	// 2. 规范化日志
-	logApp := logger.NewLogger("api-gateway")
-	defer logApp.Sync()
+	// 规范化日志
+	log := logger.NewLogger("api-gateway")
+	defer log.Sync()
 
-	// 3. 初始化鉴权依赖 (拿配置的 Secret 生成网关的 JWT 管理器)
+	// 初始化 Redis
+	redisClient := redis.Init(redis.Config{
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+	}, log)
+	defer redisClient.Close()
+
+	// 初始化 gRPC 客户端（使用纯 host:port 格式的 gRPC 地址）
+	authClient, err := grpcclient.NewAuthClient(cfg.Routes.UserPlatformGRPC)
+	if err != nil {
+		log.Fatal("初始化 Auth gRPC 客户端失败", zap.Error(err))
+	}
+	userClient, err := grpcclient.NewUserClient(cfg.Routes.UserPlatformGRPC)
+	if err != nil {
+		log.Fatal("初始化 User gRPC 客户端失败", zap.Error(err))
+	}
+	// 初始化 REST 客户端（使用 http:// 格式的 HTTP 地址）
+	noteClient := restclient.NewNoteClient(cfg.Routes.GoNote, log)
+
+	// 初始化 handler
+	dashboardHandler := handler.NewDashboardHandler(userClient, noteClient, log)
+	authHandler := handler.NewAuthHandler(authClient, log)
+	userHandler := handler.NewUserHandler(userClient, log)
+	noteHandler := handler.NewNoteHandler(noteClient, log)
+
+	// 初始化限流器
+	BBRLimiter := ratelimiter.NewBBRLimiter(100, 10*time.Second, 80)
+	IPLimiter := ratelimiter.NewSlidingWindowLimiter(redisClient, log)
+	RouteLimiter := ratelimiter.NewTokenBucketLimiter(redisClient, log)
+	UserLimiter := ratelimiter.NewSlidingWindowLimiter(redisClient, log)
+
+	// 初始化鉴权依赖 (拿配置的 Secret 生成网关的 JWT 管理器)
 	jwtManager := auth.NewJWTManager(cfg.JWT.Secret)
 
 	// 设置 Gin 运行模式：Release 模式关闭 GIN 自带的 debug 日志
@@ -47,6 +79,13 @@ func main() {
 	} else {
 		gin.SetMode(gin.ReleaseMode) // 即使开发环境也用 Release，避免 GIN debug 输出干扰 zap 日志
 	}
+
+	// [Bug 5 修复] 初始化 OpenTelemetry — 必须在注册 otelgin 中间件之前
+	shutdown, err := otel.InitTracer(cfg.OTel.ServiceName, cfg.OTel.JaegerEndpoint)
+	if err != nil {
+		log.Fatal("初始化 OpenTelemetry 失败", zap.Error(err))
+	}
+	defer shutdown(context.Background())
 
 	r := gin.New()
 
@@ -59,45 +98,91 @@ func main() {
 		"192.168.0.0/16",
 	})
 
+	// [Bug 3 修复] 全局注入 logger 到每个请求的 context，确保所有路径都能记录日志
+	r.Use(func(c *gin.Context) {
+		c.Set("logger", log)
+		c.Next()
+	})
+
 	r.GET("/metrics", metrics.GinMetricsHandler())
 	r.Use(metrics.GinMetrics())
 
-	// [全局前置拦截器]
-	r.Use(otelgin.Middleware("api-gateway"))    // 把每一条来到网关的请求打上 UUID
-	r.Use(middleware.GinLogger(logApp))         // 记录响应时长和 UUID
-	r.Use(middleware.GinRecovery(logApp, true)) // 崩溃接管防闪退
-
-	// 初始化 OpenTelemetry
-	shutdown, err := otel.InitTracer(cfg.OTel.ServiceName, cfg.OTel.JaegerEndpoint)
-	if err != nil {
-		logApp.Fatal("初始化 OpenTelemetry 失败", zap.Error(err))
+	// [CORS 防御层] — 从配置中读取白名单
+	if len(cfg.Server.CorsOrigins) > 0 {
+		r.Use(cors.New(cors.Config{
+			AllowOrigins:     cfg.Server.CorsOrigins,
+			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+			AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-Request-Id"},
+			ExposeHeaders:    []string{"Content-Length", "X-Request-Id"},
+			AllowCredentials: true,
+			MaxAge:           12 * time.Hour,
+		}))
 	}
-	defer shutdown(context.Background())
+
+	// [全局前置拦截器]
+	r.Use(otelgin.Middleware("api-gateway")) // 把每一条来到网关的请求打上 TraceID
+	r.Use(logger.GinLogger(log))             // 记录响应时长和 TraceID（来自 common/logger）
+	r.Use(logger.GinRecovery(log, true))     // 崩溃接管防闪退
 	// 路由设计：
 	api := r.Group("/api/v1")
+	// Layer 1: IP 限流 (滑动窗口) - 所有请求都过
+	api.Use(ratelimit.IPrateLimit(IPLimiter, 50, time.Second, log))
+	// Layer 2: BBR 自适应限流 - 所有请求都过
+	api.Use(ratelimit.BBRMiddleware(BBRLimiter, log))
+	// 公共接口（无需 JWT 鉴权）
+	api.POST("/users/register", userHandler.Register)
+	api.POST("/users/login", authHandler.Login)
+	api.POST("/users/refresh", authHandler.RefreshToken)
 	{
-		// 用户模块代理
+		// 用户模块路由组（需 JWT 鉴权）
 		usersGroup := api.Group("/users")
-		usersGroup.Use(middleware.JWTAuth(jwtManager, logApp))
-		usersGroup.Any("", ReverseProxyWrapper(cfg.Routes.UserPlatform))
-		usersGroup.Any("/*any", ReverseProxyWrapper(cfg.Routes.UserPlatform))
-
-		// 笔记模块代理 (go-note 后端)
-		// 经过跨端查阅，你的独立微服务 go-note 依然使用统一鉴权体系
-		notesGroup := api.Group("")
-		notesGroup.Use(middleware.JWTAuth(jwtManager, logApp))
-		notesGroup.Any("/me/pastes", ReverseProxyWrapper(cfg.Routes.GoNote))
-		notesGroup.Any("/me/pastes/*any", ReverseProxyWrapper(cfg.Routes.GoNote))
-		notesGroup.Any("/pastes", ReverseProxyWrapper(cfg.Routes.GoNote))
-		notesGroup.Any("/pastes/*any", ReverseProxyWrapper(cfg.Routes.GoNote))
+		// Layer 3: 路由限流 (令牌桶) - 单个服务级别
+		usersGroup.Use(ratelimit.RouteRateLimit(RouteLimiter, 200, 10*time.Second, log))
+		usersGroup.Use(middleware.JWTAuth(jwtManager, log))
+		// Layer 4: 用户限流 (滑动窗口) - 登录用户过
+		usersGroup.Use(ratelimit.UserRateLimit(UserLimiter, 20, time.Second, log))
+		usersGroup.GET("/dashboard", dashboardHandler.GetDashboard)
+		usersGroup.GET("/me/profile", userHandler.GetProfile)
+		usersGroup.PUT("/me/profile", userHandler.UpdateProfile)
+		usersGroup.POST("/logout", authHandler.Logout)
+	}
+	{
+		// 笔记模块路由组（需 JWT 鉴权）
+		notesGroup := api.Group("/notes")
+		notesGroup.Use(ratelimit.RouteRateLimit(RouteLimiter, 200, 10*time.Second, log))
+		notesGroup.Use(middleware.JWTAuth(jwtManager, log))
+		notesGroup.Use(ratelimit.UserRateLimit(UserLimiter, 20, time.Second, log))
+		notesGroup.GET("/me/pastes", noteHandler.ListMine)
+		notesGroup.POST("/pastes", noteHandler.Create)
+		notesGroup.GET("/pastes/:id", noteHandler.Get)
+		notesGroup.PUT("/pastes/:id", noteHandler.Update)
 	}
 
 	// 启动网关服务
-	logApp.Info("API Gateway 启动成功, 纯 Gin 版本重构完毕",
-		zap.String("port", cfg.Server.Port),
-	)
-
-	if err := r.Run(":" + cfg.Server.Port); err != nil {
-		log.Fatalf("API网关运行异常: %v", err)
+	srv := &http.Server{
+		Addr:    ":" + cfg.Server.Port,
+		Handler: r,
 	}
+
+	go func() {
+		log.Info("API Gateway 启动成功",
+			zap.String("port", cfg.Server.Port),
+		)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal("API网关运行异常: %v", zap.Error(err))
+		}
+	}()
+
+	// 优雅停机,拦截系统的停机信号（如 Ctrl+C）
+	quit := make(chan os.Signal, 1)
+	// [Bug 4 修复] 同时监听 SIGINT(Ctrl+C) 和 SIGTERM(Docker/K8s 停止信号)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+	log.Info("API Gateway 正在关闭...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatal("API网关强制关闭", zap.Error(err))
+	}
+	log.Info("API Gateway 已关闭")
 }

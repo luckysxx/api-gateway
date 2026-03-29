@@ -17,9 +17,6 @@ import (
 // GinLogger 返回一个记录 HTTP 请求信息的 Gin 中间件
 func GinLogger(log *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 将logger存储到context中，供response.Error使用
-		c.Set("logger", log)
-
 		start := time.Now()
 		path := c.Request.URL.Path
 		query := c.Request.URL.RawQuery

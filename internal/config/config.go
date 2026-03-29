@@ -18,12 +18,14 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port string `mapstructure:"port"`
+	Port        string   `mapstructure:"port"`
+	CorsOrigins []string `mapstructure:"cors_origins"`
 }
 
 type RoutesConfig struct {
-	UserPlatform string `mapstructure:"user_platform"`
-	GoNote       string `mapstructure:"go_note"`
+	UserPlatformHTTP string `mapstructure:"user_platform_http"`
+	UserPlatformGRPC string `mapstructure:"user_platform_grpc"`
+	GoNote           string `mapstructure:"go_note"`
 }
 
 type JWTConfig struct {

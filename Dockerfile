@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # ======== 构建阶段 ========
 FROM golang:1.25-alpine AS builder
 
@@ -8,11 +9,14 @@ ENV GOPROXY=https://goproxy.cn,direct
 
 # 先拷贝依赖文件，利用 Docker layer cache（go.mod 不变就不重新下载）
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 # 拷贝源码并编译（CGO_ENABLED=0 生成静态二进制，alpine 能直接运行）
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o api_gateway ./cmd/server
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -o api_gateway ./cmd/server
 
 # ======== 运行阶段（镜像从 ~1GB 缩小到 ~30MB）========
 FROM alpine:latest
