@@ -8,13 +8,16 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/joho/godotenv v1.5.1
 	github.com/luckysxx/common/errs v0.1.0
+	github.com/luckysxx/common/health v0.0.0-00010101000000-000000000000
 	github.com/luckysxx/common/metrics v0.1.0
 	github.com/luckysxx/common/proto v0.2.0
 	github.com/luckysxx/common/ratelimiter v0.2.0
 	github.com/luckysxx/common/redis v0.1.0
 	github.com/sony/gobreaker v1.0.0
+	github.com/sony/gobreaker/v2 v2.4.0
 	github.com/spf13/viper v1.21.0
 	go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin v0.67.0
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0
 	go.opentelemetry.io/otel v1.42.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/sync v0.20.0
@@ -103,3 +106,5 @@ require (
 )
 
 replace google.golang.org/genproto => google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7
+
+replace github.com/luckysxx/common/health => ../common/health

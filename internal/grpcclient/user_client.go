@@ -2,15 +2,12 @@ package grpcclient
 
 import (
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	userpb "github.com/luckysxx/common/proto/user"
 )
 
 func NewUserClient(userPlatformAddr string) (userpb.UserServiceClient, error) {
-	conn, err := grpc.NewClient(userPlatformAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	conn, err := grpc.NewClient(userPlatformAddr, DefaultDialOptions(userPlatformAddr)...)
 	if err != nil {
 		return nil, err
 	}

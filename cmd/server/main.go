@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/luckysxx/common/health"
 	"github.com/luckysxx/common/logger"
 	"github.com/luckysxx/common/metrics"
 	"github.com/luckysxx/common/otel"
@@ -103,6 +104,22 @@ func main() {
 		c.Set("logger", log)
 		c.Next()
 	})
+
+	// 健康检查（注册在所有中间件之前，避免被限流/鉴权拦截）
+	healthChecker := health.NewChecker()
+	healthChecker.AddCheck("redis", func(ctx context.Context) error {
+		return redisClient.Ping(ctx).Err()
+	})
+	healthChecker.AddCheck("go-note", func(ctx context.Context) error {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Routes.GoNote+"/healthz", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		return nil
+	})
+	healthChecker.Register(r)
 
 	r.GET("/metrics", metrics.GinMetricsHandler())
 	r.Use(metrics.GinMetrics())
