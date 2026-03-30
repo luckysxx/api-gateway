@@ -8,11 +8,11 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/joho/godotenv v1.5.1
 	github.com/luckysxx/common/errs v0.1.0
-	github.com/luckysxx/common/health v0.0.0-00010101000000-000000000000
-	github.com/luckysxx/common/metrics v0.1.0
-	github.com/luckysxx/common/proto v0.2.0
+	github.com/luckysxx/common/health v0.2.0
+	github.com/luckysxx/common/metrics v0.3.0
+	github.com/luckysxx/common/proto v0.3.0
 	github.com/luckysxx/common/ratelimiter v0.2.0
-	github.com/luckysxx/common/redis v0.1.0
+	github.com/luckysxx/common/redis v0.2.0
 	github.com/sony/gobreaker v1.0.0
 	github.com/sony/gobreaker/v2 v2.4.0
 	github.com/spf13/viper v1.21.0
@@ -104,7 +104,3 @@ require (
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace google.golang.org/genproto => google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7
-
-replace github.com/luckysxx/common/health => ../common/health

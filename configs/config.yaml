@@ -12,6 +12,7 @@ routes:
   user_platform_http: "http://localhost:8081"
   user_platform_grpc: "localhost:9091"
   go_note: "http://localhost:8080"
+  go_chat: "http://localhost:8083"
 
 jwt:
   secret: "user_platform_secret_key" # 和 user-platform 对齐的解析秘钥

@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
+// circuitBreakerTransport 包装了 http.RoundTripper，在转发请求前检查熔断器状态
 type circuitBreakerTransport struct {
 	http.RoundTripper
 	Breaker *gobreaker.CircuitBreaker

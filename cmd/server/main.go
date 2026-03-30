@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +26,7 @@ import (
 	"api-gateway/internal/handler"
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/middleware/ratelimit"
+	"api-gateway/internal/proxy"
 	"api-gateway/internal/restclient"
 
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
@@ -57,12 +59,14 @@ func main() {
 	}
 	// 初始化 REST 客户端（使用 http:// 格式的 HTTP 地址）
 	noteClient := restclient.NewNoteClient(cfg.Routes.GoNote, log)
+	chatProxy := proxy.NewReverseProxy(cfg.Routes.GoChat)
 
 	// 初始化 handler
 	dashboardHandler := handler.NewDashboardHandler(userClient, noteClient, log)
 	authHandler := handler.NewAuthHandler(authClient, log)
 	userHandler := handler.NewUserHandler(userClient, log)
 	noteHandler := handler.NewNoteHandler(noteClient, log)
+	chatHandler := handler.NewChatHandler(chatProxy)
 
 	// 初始化限流器
 	BBRLimiter := ratelimiter.NewBBRLimiter(100, 10*time.Second, 80)
@@ -111,12 +115,27 @@ func main() {
 		return redisClient.Ping(ctx).Err()
 	})
 	healthChecker.AddCheck("go-note", func(ctx context.Context) error {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Routes.GoNote+"/healthz", nil)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Routes.GoNote+"/readyz", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return err
 		}
 		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("go-note readiness returned status %d", resp.StatusCode)
+		}
+		return nil
+	})
+	healthChecker.AddCheck("go-chat", func(ctx context.Context) error {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Routes.GoChat+"/readyz", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("go-chat readiness returned status %d", resp.StatusCode)
+		}
 		return nil
 	})
 	healthChecker.Register(r)
@@ -173,6 +192,13 @@ func main() {
 		notesGroup.POST("/pastes", noteHandler.Create)
 		notesGroup.GET("/pastes/:id", noteHandler.Get)
 		notesGroup.PUT("/pastes/:id", noteHandler.Update)
+	}
+	{
+		chatGroup := api.Group("/chat")
+		chatGroup.Use(ratelimit.RouteRateLimit(RouteLimiter, 200, 10*time.Second, log))
+		chatGroup.Use(middleware.JWTAuth(jwtManager, log))
+		chatGroup.Use(ratelimit.UserRateLimit(UserLimiter, 30, time.Second, log))
+		chatGroup.Any("/*path", chatHandler.Proxy)
 	}
 
 	// 启动网关服务

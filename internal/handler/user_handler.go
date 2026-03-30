@@ -12,11 +12,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// UserHandler 负责处理网关侧的用户相关请求。
 type UserHandler struct {
 	userClient userpb.UserServiceClient
 	log        *zap.Logger
 }
 
+// NewUserHandler 创建一个用户 Handler。
 func NewUserHandler(userClient userpb.UserServiceClient, log *zap.Logger) *UserHandler {
 	return &UserHandler{userClient: userClient, log: log}
 }
@@ -74,6 +76,7 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 		Nickname:  resp.Nickname,
 		AvatarURL: resp.AvatarUrl,
 		Bio:       resp.Bio,
+		Birthday:  resp.Birthday,
 		UpdatedAt: resp.UpdatedAt,
 	})
 }
@@ -101,6 +104,7 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 		Nickname:  req.Nickname,
 		AvatarUrl: req.AvatarURL,
 		Bio:       req.Bio,
+		Birthday:  req.Birthday,
 	})
 	if err != nil {
 		h.log.Error("更新个人资料失败", zap.Error(err))
@@ -113,6 +117,7 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 		Nickname:  resp.Nickname,
 		AvatarURL: resp.AvatarUrl,
 		Bio:       resp.Bio,
+		Birthday:  resp.Birthday,
 		UpdatedAt: resp.UpdatedAt,
 	})
 }
