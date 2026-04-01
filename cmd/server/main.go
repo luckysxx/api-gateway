@@ -58,14 +58,28 @@ func main() {
 		log.Fatal("初始化 User gRPC 客户端失败", zap.Error(err))
 	}
 	// 初始化 REST 客户端（使用 http:// 格式的 HTTP 地址）
-	noteClient := restclient.NewNoteClient(cfg.Routes.GoNote, log)
+	noteClientRest := restclient.NewNoteClient(cfg.Routes.GoNote, log)
+
+	// [双轨制] 初始化 gRPC 客户端
+	noteClientGrpc, err := grpcclient.NewNoteClient(cfg.Routes.GoNoteGRPC)
+	if err != nil {
+		log.Error("初始化 Note gRPC 客户端失败", zap.Error(err))
+	}
+
 	chatProxy := proxy.NewReverseProxy(cfg.Routes.GoChat)
 
+	// ====== [双轨制协议开关] ======
+	// 控制从网关流向 note-service 的请求是走 gRPC 还是 HTTP REST
+	useGrpcForNotes := true
+
 	// 初始化 handler
-	dashboardHandler := handler.NewDashboardHandler(userClient, noteClient, log)
+	dashboardHandler := handler.NewDashboardHandler(userClient, noteClientRest, log) // Dashbaord 当前未重构暂走REST
 	authHandler := handler.NewAuthHandler(authClient, log)
 	userHandler := handler.NewUserHandler(userClient, log)
-	noteHandler := handler.NewNoteHandler(noteClient, log)
+	
+	noteHandlerRestInstance := handler.NewNoteHandler(noteClientRest, log)
+	noteHandlerGrpcInstance := handler.NewNoteHandlerGrpc(noteClientGrpc, log)
+
 	chatHandler := handler.NewChatHandler(chatProxy)
 
 	// 初始化限流器
@@ -169,6 +183,12 @@ func main() {
 	api.POST("/users/register", userHandler.Register)
 	api.POST("/users/login", authHandler.Login)
 	api.POST("/users/refresh", authHandler.RefreshToken)
+	if useGrpcForNotes {
+		api.GET("/notes/public/snippets/:id", noteHandlerGrpcInstance.GetPublic)
+	} else {
+		api.GET("/notes/public/snippets/:id", noteHandlerRestInstance.GetPublic)
+	}
+
 	{
 		// 用户模块路由组（需 JWT 鉴权）
 		usersGroup := api.Group("/users")
@@ -188,10 +208,72 @@ func main() {
 		notesGroup.Use(ratelimit.RouteRateLimit(RouteLimiter, 200, 10*time.Second, log))
 		notesGroup.Use(middleware.JWTAuth(jwtManager, log))
 		notesGroup.Use(ratelimit.UserRateLimit(UserLimiter, 20, time.Second, log))
-		notesGroup.GET("/me/pastes", noteHandler.ListMine)
-		notesGroup.POST("/pastes", noteHandler.Create)
-		notesGroup.GET("/pastes/:id", noteHandler.Get)
-		notesGroup.PUT("/pastes/:id", noteHandler.Update)
+
+		if useGrpcForNotes {
+			notesGroup.GET("/me/snippets", noteHandlerGrpcInstance.ListMine)
+			notesGroup.POST("/snippets", noteHandlerGrpcInstance.Create)
+			notesGroup.GET("/snippets/:id", noteHandlerGrpcInstance.Get)
+			notesGroup.PUT("/snippets/:id", noteHandlerGrpcInstance.Update)
+
+			// 片段扩展
+			notesGroup.DELETE("/snippets/:id", noteHandlerGrpcInstance.Delete)
+			notesGroup.GET("/snippets/search", noteHandlerGrpcInstance.Search)
+			notesGroup.POST("/snippets/:id/favorite", noteHandlerGrpcInstance.Favorite)
+			notesGroup.DELETE("/snippets/:id/favorite", noteHandlerGrpcInstance.Unfavorite)
+			notesGroup.POST("/snippets/from-template", noteHandlerGrpcInstance.CreateFromTemplate)
+
+			// 工作区列表
+			notesGroup.GET("/me/snippets/recent", noteHandlerGrpcInstance.ListRecent)
+			notesGroup.GET("/me/snippets/shared", noteHandlerGrpcInstance.ListShared)
+			notesGroup.GET("/me/snippets/favorites", noteHandlerGrpcInstance.ListFavorites)
+
+			// 分组与标签
+			notesGroup.GET("/groups", noteHandlerGrpcInstance.GetGroups)
+			notesGroup.POST("/groups", noteHandlerGrpcInstance.CreateGroup)
+			notesGroup.PUT("/groups/:id", noteHandlerGrpcInstance.UpdateGroup)
+			notesGroup.DELETE("/groups/:id", noteHandlerGrpcInstance.DeleteGroup)
+
+			notesGroup.GET("/tags", noteHandlerGrpcInstance.GetTags)
+			notesGroup.POST("/tags", noteHandlerGrpcInstance.CreateTag)
+			notesGroup.DELETE("/tags/:id", noteHandlerGrpcInstance.DeleteTag)
+
+			// 模板与上传
+			notesGroup.GET("/templates", noteHandlerGrpcInstance.GetTemplates)
+			notesGroup.GET("/templates/:id", noteHandlerGrpcInstance.GetTemplate)
+			notesGroup.POST("/uploads", noteHandlerGrpcInstance.Upload)
+		} else {
+			notesGroup.GET("/me/snippets", noteHandlerRestInstance.ListMine)
+			notesGroup.POST("/snippets", noteHandlerRestInstance.Create)
+			notesGroup.GET("/snippets/:id", noteHandlerRestInstance.Get)
+			notesGroup.PUT("/snippets/:id", noteHandlerRestInstance.Update)
+
+			// 片段扩展
+			notesGroup.DELETE("/snippets/:id", noteHandlerRestInstance.Delete)
+			notesGroup.GET("/snippets/search", noteHandlerRestInstance.Search)
+			notesGroup.POST("/snippets/:id/favorite", noteHandlerRestInstance.Favorite)
+			notesGroup.DELETE("/snippets/:id/favorite", noteHandlerRestInstance.Unfavorite)
+			notesGroup.POST("/snippets/from-template", noteHandlerRestInstance.CreateFromTemplate)
+
+			// 工作区列表
+			notesGroup.GET("/me/snippets/recent", noteHandlerRestInstance.ListRecent)
+			notesGroup.GET("/me/snippets/shared", noteHandlerRestInstance.ListShared)
+			notesGroup.GET("/me/snippets/favorites", noteHandlerRestInstance.ListFavorites)
+
+			// 分组与标签
+			notesGroup.GET("/groups", noteHandlerRestInstance.GetGroups)
+			notesGroup.POST("/groups", noteHandlerRestInstance.CreateGroup)
+			notesGroup.PUT("/groups/:id", noteHandlerRestInstance.UpdateGroup)
+			notesGroup.DELETE("/groups/:id", noteHandlerRestInstance.DeleteGroup)
+
+			notesGroup.GET("/tags", noteHandlerRestInstance.GetTags)
+			notesGroup.POST("/tags", noteHandlerRestInstance.CreateTag)
+			notesGroup.DELETE("/tags/:id", noteHandlerRestInstance.DeleteTag)
+
+			// 模板与上传
+			notesGroup.GET("/templates", noteHandlerRestInstance.GetTemplates)
+			notesGroup.GET("/templates/:id", noteHandlerRestInstance.GetTemplate)
+			notesGroup.POST("/uploads", noteHandlerRestInstance.Upload)
+		}
 	}
 	{
 		chatGroup := api.Group("/chat")

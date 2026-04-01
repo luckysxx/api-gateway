@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	authpb "github.com/luckysxx/common/proto/auth"
+	commonlogger "github.com/luckysxx/common/logger"
 
 	"go.uber.org/zap"
 )
@@ -27,7 +28,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	var req dto.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		errMsg := validator.TranslateValidationError(err)
-		h.log.Warn("参数验证失败", zap.Error(err), zap.String("message", errMsg))
+		commonlogger.Ctx(c.Request.Context(), h.log).Warn("参数验证失败", zap.Error(err), zap.String("message", errMsg))
 		response.BadRequest(c, errMsg)
 		return
 	}
@@ -39,7 +40,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		DeviceId: req.DeviceId,
 	})
 	if err != nil {
-		h.log.Error("用户登录失败", zap.Error(err))
+		commonlogger.Ctx(c.Request.Context(), h.log).Error("用户登录失败", zap.Error(err))
 		response.Error(c, validator.ConvertToHTTPError(err))
 		return
 	}
@@ -56,7 +57,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	var req dto.RefreshTokenRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		errMsg := validator.TranslateValidationError(err)
-		h.log.Warn("参数验证失败", zap.Error(err), zap.String("message", errMsg))
+		commonlogger.Ctx(c.Request.Context(), h.log).Warn("参数验证失败", zap.Error(err), zap.String("message", errMsg))
 		response.BadRequest(c, errMsg)
 		return
 	}
@@ -65,7 +66,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		Token: req.RefreshToken,
 	})
 	if err != nil {
-		h.log.Error("刷新令牌失败", zap.Error(err))
+		commonlogger.Ctx(c.Request.Context(), h.log).Error("刷新令牌失败", zap.Error(err))
 		response.Error(c, validator.ConvertToHTTPError(err))
 		return
 	}
@@ -88,7 +89,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	grpcCtx := grpcclient.WithUserID(c.Request.Context(), userID)
 	_, err := h.authClient.Logout(grpcCtx, &authpb.LogoutRequest{})
 	if err != nil {
-		h.log.Error("用户退出登录失败", zap.Int64("userID", userID), zap.Error(err))
+		commonlogger.Ctx(grpcCtx, h.log).Error("用户退出登录失败", zap.Int64("userID", userID), zap.Error(err))
 		response.Error(c, validator.ConvertToHTTPError(err))
 		return
 	}

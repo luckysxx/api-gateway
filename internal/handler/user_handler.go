@@ -7,6 +7,7 @@ import (
 	"api-gateway/internal/handler/validator"
 
 	"github.com/gin-gonic/gin"
+	commonlogger "github.com/luckysxx/common/logger"
 	userpb "github.com/luckysxx/common/proto/user"
 
 	"go.uber.org/zap"
@@ -29,7 +30,7 @@ func (h *UserHandler) Register(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		// 使用 validator 翻译验证错误为友好提示
 		errMsg := validator.TranslateValidationError(err)
-		h.log.Warn("参数验证失败", zap.Error(err), zap.String("message", errMsg))
+		commonlogger.Ctx(c.Request.Context(), h.log).Warn("参数验证失败", zap.Error(err), zap.String("message", errMsg))
 		response.BadRequest(c, errMsg)
 		return
 	}
@@ -40,7 +41,7 @@ func (h *UserHandler) Register(c *gin.Context) {
 		Email:    req.Email,
 	})
 	if err != nil {
-		h.log.Error("用户注册失败", zap.Error(err))
+		commonlogger.Ctx(c.Request.Context(), h.log).Error("用户注册失败", zap.Error(err))
 		// 这里可以直接抛出，因为底层 Service 已经是 Domain Error 了
 		response.Error(c, validator.ConvertToHTTPError(err))
 		return
@@ -66,7 +67,7 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 		UserId: userID,
 	})
 	if err != nil {
-		h.log.Error("获取个人资料失败", zap.Error(err))
+		commonlogger.Ctx(grpcCtx, h.log).Error("获取个人资料失败", zap.Error(err))
 		response.Error(c, validator.ConvertToHTTPError(err))
 		return
 	}
@@ -93,7 +94,7 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	var req dto.UpdateProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		errMsg := validator.TranslateValidationError(err)
-		h.log.Warn("参数验证失败", zap.Error(err), zap.String("message", errMsg))
+		commonlogger.Ctx(c.Request.Context(), h.log).Warn("参数验证失败", zap.Error(err), zap.String("message", errMsg))
 		response.BadRequest(c, errMsg)
 		return
 	}
@@ -107,7 +108,7 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 		Birthday:  req.Birthday,
 	})
 	if err != nil {
-		h.log.Error("更新个人资料失败", zap.Error(err))
+		commonlogger.Ctx(grpcCtx, h.log).Error("更新个人资料失败", zap.Error(err))
 		response.Error(c, validator.ConvertToHTTPError(err))
 		return
 	}

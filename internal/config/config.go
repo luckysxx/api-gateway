@@ -29,6 +29,7 @@ type RoutesConfig struct {
 	UserPlatformHTTP string `mapstructure:"user_platform_http"`
 	UserPlatformGRPC string `mapstructure:"user_platform_grpc"`
 	GoNote           string `mapstructure:"go_note"`
+	GoNoteGRPC       string `mapstructure:"go_note_grpc"`
 	GoChat           string `mapstructure:"go_chat"`
 }
 

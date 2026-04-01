@@ -43,10 +43,10 @@ api-gateway/
 - `GET /api/v1/users/me/profile`
 - `PUT /api/v1/users/me/profile`
 - `POST /api/v1/users/logout`
-- `GET /api/v1/notes/me/pastes`
-- `POST /api/v1/notes/pastes`
-- `GET /api/v1/notes/pastes/:id`
-- `PUT /api/v1/notes/pastes/:id`
+- `GET /api/v1/notes/me/snippets`
+- `POST /api/v1/notes/snippets`
+- `GET /api/v1/notes/snippets/:id`
+- `PUT /api/v1/notes/snippets/:id`
 
 ## Quick Start
 

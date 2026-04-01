@@ -5,7 +5,7 @@ FROM golang:1.25-alpine AS builder
 WORKDIR /app
 
 # 设置国内 Go 代理
-ENV GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=https://proxy.golang.org,direct
 
 # 先拷贝依赖清单，提高缓存命中率
 COPY go.mod go.sum ./

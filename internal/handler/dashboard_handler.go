@@ -11,6 +11,7 @@ import (
 	"api-gateway/internal/restclient"
 
 	"github.com/gin-gonic/gin"
+	commonlogger "github.com/luckysxx/common/logger"
 	userpb "github.com/luckysxx/common/proto/user"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -46,7 +47,7 @@ func (h *DashboardHandler) GetDashboard(c *gin.Context) {
 	// 定义网关专用的超级 DTO 面板结构
 	var dashResponse struct {
 		Profile *dto.GetProfileResponse `json:"profile"`
-		Pastes  []restclient.Paste      `json:"recent_pastes"`
+		Snippets []restclient.Snippet   `json:"recent_snippets"`
 	}
 
 	// 第一部分：创建一个带 2 秒超时的 并发上下文，并注入网关身份信息
@@ -77,23 +78,23 @@ func (h *DashboardHandler) GetDashboard(c *gin.Context) {
 
 	// 第三部分：并发任务 B (走 HTTP 获取边缘笔记数据)
 	eg.Go(func() error {
-		pastes, err := h.noteClient.GetRecentPastes(egCtx, userID)
+		snippets, err := h.noteClient.GetRecentSnippets(egCtx, userID)
 		if err != nil {
 			// 核心：部分降级
 			// 发生错误千万不要 return err，否则整个请求 500 崩溃
 			// 只记录 Warn 日志，返回一个空数组给前台兜底
-			h.log.Warn("Dashboard-获取边缘笔记链路故障，已执行降级策略", zap.Error(err))
-			dashResponse.Pastes = []restclient.Paste{}
+			commonlogger.Ctx(egCtx, h.log).Warn("Dashboard-获取边缘笔记链路故障，已执行降级策略", zap.Error(err))
+			dashResponse.Snippets = []restclient.Snippet{}
 			return nil
 		}
-		dashResponse.Pastes = pastes
+		dashResponse.Snippets = snippets
 		return nil
 	})
 
 	// 第四部分：阻塞等待所有协程全部落位
 	if err := eg.Wait(); err != nil {
 		// 如果接收到 err，说明某条要求保证一致性的链路（如主数据）断裂了
-		h.log.Error("并发组装 Dashboard 遭遇核心系统熔断", zap.Error(err))
+		commonlogger.Ctx(egCtx, h.log).Error("并发组装 Dashboard 遭遇核心系统熔断", zap.Error(err))
 		response.Error(c, validator.ConvertToHTTPError(err))
 		return
 	}

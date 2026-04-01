@@ -12,6 +12,7 @@ services:
       - ROUTES_USER_PLATFORM=http://user-http:8081
       - ROUTES_USER_PLATFORM_GRPC=user-grpc:9091
       - ROUTES_GO_NOTE=http://go-note:8080
+      - ROUTES_GO_NOTE_GRPC=go-note-grpc:9093
       # 如果启用了限流器，同样覆写 Redis 的地址为公网或 infra 网络里的名字
       - REDIS_ADDR=global-redis:6379
       - OTEL_JAEGER_ENDPOINT=global-jaeger:4318

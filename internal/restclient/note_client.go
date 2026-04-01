@@ -10,26 +10,50 @@ import (
 	"strings"
 	"time"
 
+	commonlogger "github.com/luckysxx/common/logger"
 	"go.uber.org/zap"
 )
 
-// Paste 表示从下游 go-note 服务获取的动态结构的笔记/代码片段对象。
+// Snippet 表示从下游 go-note 服务获取的动态结构的笔记/代码片段对象。
 // 作为一个 BFF (Backend for Frontend) 聚合层，使用 map[string]any 避免了过度解析强类型字段，
 // 同时也比纯粹的 interface{} 拥有更好的代码结构清晰度。
-type Paste map[string]any
+type Snippet map[string]any
 
 // NoteClient 定义了与 go-note 微服务进行交互的客户端接口规范。
 type NoteClient interface {
-	// GetRecentPastes 拉取近期笔记列表（Dashboard 聚合专用）
-	GetRecentPastes(ctx context.Context, userID int64) ([]Paste, error)
-	// ListMyPastes 获取当前用户的笔记列表
-	ListMyPastes(ctx context.Context, userID int64) ([]Paste, error)
-	// CreatePaste 创建笔记
-	CreatePaste(ctx context.Context, userID int64, body map[string]any) (Paste, error)
-	// GetPaste 获取单条笔记详情
-	GetPaste(ctx context.Context, userID int64, pasteID string) (Paste, error)
-	// UpdatePaste 更新笔记
-	UpdatePaste(ctx context.Context, userID int64, pasteID string, body map[string]any) (Paste, error)
+	// --- 已有 ---
+	GetRecentSnippets(ctx context.Context, userID int64) ([]Snippet, error)
+	ListMySnippets(ctx context.Context, userID int64) ([]Snippet, error)
+	CreateSnippet(ctx context.Context, userID int64, body map[string]any) (Snippet, error)
+	GetSnippet(ctx context.Context, userID int64, snippetID string) (Snippet, error)
+	UpdateSnippet(ctx context.Context, userID int64, snippetID string, body map[string]any) (Snippet, error)
+
+	// --- 新增：片段扩展 ---
+	DeleteSnippet(ctx context.Context, userID int64, snippetID string) (Snippet, error)
+	SearchSnippets(ctx context.Context, userID int64, rawQuery string) ([]Snippet, error)
+	GetPublicSnippet(ctx context.Context, snippetID string) (Snippet, error)
+	FavoriteSnippet(ctx context.Context, userID int64, snippetID string) (Snippet, error)
+	UnfavoriteSnippet(ctx context.Context, userID int64, snippetID string) (Snippet, error)
+	CreateSnippetFromTemplate(ctx context.Context, userID int64, body map[string]any) (Snippet, error)
+
+	// --- 新增：工作区列表 ---
+	GetSharedSnippets(ctx context.Context, userID int64) ([]Snippet, error)
+	GetFavoriteSnippets(ctx context.Context, userID int64) ([]Snippet, error)
+
+	// --- 新增：分组与标签 ---
+	GetGroups(ctx context.Context, userID int64) ([]Snippet, error)
+	CreateGroup(ctx context.Context, userID int64, body map[string]any) (Snippet, error)
+	UpdateGroup(ctx context.Context, userID int64, groupID string, body map[string]any) (Snippet, error)
+	DeleteGroup(ctx context.Context, userID int64, groupID string) (Snippet, error)
+
+	GetTags(ctx context.Context, userID int64) ([]Snippet, error)
+	CreateTag(ctx context.Context, userID int64, body map[string]any) (Snippet, error)
+	DeleteTag(ctx context.Context, userID int64, tagID string) (Snippet, error)
+
+	// --- 新增：模板与上传 ---
+	GetTemplates(ctx context.Context, userID int64) ([]Snippet, error)
+	GetTemplate(ctx context.Context, userID int64, templateID string) (Snippet, error)
+	UploadFile(ctx context.Context, userID int64, contentType string, body io.Reader) (Snippet, error)
 }
 
 // noteClient 是 NoteClient 接口的具体实现体。
@@ -66,7 +90,7 @@ func NewNoteClient(baseURL string, log *zap.Logger) NoteClient {
 func (c *noteClient) doRequest(req *http.Request) ([]byte, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.log.Error("调用 go-note 微服务发生网络层通信异常",
+		commonlogger.Ctx(req.Context(), c.log).Error("调用 go-note 微服务发生网络层通信异常",
 			zap.String("method", req.Method),
 			zap.String("url", req.URL.String()),
 			zap.Error(err),
@@ -81,7 +105,7 @@ func (c *noteClient) doRequest(req *http.Request) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		c.log.Warn("go-note 服务返回了异常的非 200 状态码",
+		commonlogger.Ctx(req.Context(), c.log).Warn("go-note 服务返回了异常的非 200 状态码",
 			zap.String("method", req.Method),
 			zap.String("url", req.URL.String()),
 			zap.Int("status", resp.StatusCode),
@@ -94,17 +118,17 @@ func (c *noteClient) doRequest(req *http.Request) ([]byte, error) {
 }
 
 // decodeSingle 解析下游返回的单条记录响应 { "code": ..., "msg": ..., "data": {...} }
-func (c *noteClient) decodeSingle(body []byte) (Paste, error) {
+func (c *noteClient) decodeSingle(ctx context.Context, body []byte) (Snippet, error) {
 	var result struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
-		Data Paste  `json:"data"`
+		Data Snippet `json:"data"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("解析 go-note 返回体发生解码错误: %w", err)
 	}
 	if result.Code != 0 && result.Code != 200 {
-		c.log.Warn("go-note 服务上抛了业务模块异常规则",
+		commonlogger.Ctx(ctx, c.log).Warn("go-note 服务上抛了业务模块异常规则",
 			zap.Int("code", result.Code),
 			zap.String("msg", result.Msg),
 		)
@@ -114,17 +138,17 @@ func (c *noteClient) decodeSingle(body []byte) (Paste, error) {
 }
 
 // decodeList 解析下游返回的列表响应 { "code": ..., "msg": ..., "data": [...] }
-func (c *noteClient) decodeList(body []byte) ([]Paste, error) {
+func (c *noteClient) decodeList(ctx context.Context, body []byte) ([]Snippet, error) {
 	var result struct {
 		Code int     `json:"code"`
 		Msg  string  `json:"msg"`
-		Data []Paste `json:"data"`
+		Data []Snippet `json:"data"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("解析 go-note 返回体发生解码错误: %w", err)
 	}
 	if result.Code != 0 && result.Code != 200 {
-		c.log.Warn("go-note 服务上抛了业务模块异常规则",
+		commonlogger.Ctx(ctx, c.log).Warn("go-note 服务上抛了业务模块异常规则",
 			zap.Int("code", result.Code),
 			zap.String("msg", result.Msg),
 		)
@@ -162,9 +186,9 @@ func (c *noteClient) newJSONRequest(ctx context.Context, method, url string, use
 // 接口实现
 // ──────────────────────────────────────────────────
 
-// GetRecentPastes 实现接口方法，执行对 /api/v1/pastes 的远程 GET 调用（Dashboard 聚合专用）。
-func (c *noteClient) GetRecentPastes(ctx context.Context, userID int64) ([]Paste, error) {
-	reqURL := fmt.Sprintf("%s/api/v1/me/pastes", c.baseURL)
+// GetRecentSnippets 实现接口方法，执行对 /api/v1/snippets 的远程 GET 调用（Dashboard 聚合专用）。
+func (c *noteClient) GetRecentSnippets(ctx context.Context, userID int64) ([]Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/me/snippets", c.baseURL)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -177,12 +201,12 @@ func (c *noteClient) GetRecentPastes(ctx context.Context, userID int64) ([]Paste
 	if err != nil {
 		return nil, err
 	}
-	return c.decodeList(body)
+	return c.decodeList(ctx, body)
 }
 
-// ListMyPastes 获取当前用户的笔记列表。
-func (c *noteClient) ListMyPastes(ctx context.Context, userID int64) ([]Paste, error) {
-	reqURL := fmt.Sprintf("%s/api/v1/me/pastes", c.baseURL)
+// ListMySnippets 获取当前用户的笔记列表。
+func (c *noteClient) ListMySnippets(ctx context.Context, userID int64) ([]Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/me/snippets", c.baseURL)
 
 	req, err := c.newJSONRequest(ctx, http.MethodGet, reqURL, userID, nil)
 	if err != nil {
@@ -193,12 +217,12 @@ func (c *noteClient) ListMyPastes(ctx context.Context, userID int64) ([]Paste, e
 	if err != nil {
 		return nil, err
 	}
-	return c.decodeList(body)
+	return c.decodeList(ctx, body)
 }
 
-// CreatePaste 创建一条新笔记。
-func (c *noteClient) CreatePaste(ctx context.Context, userID int64, payload map[string]any) (Paste, error) {
-	reqURL := fmt.Sprintf("%s/api/v1/pastes", c.baseURL)
+// CreateSnippet 创建一条新笔记。
+func (c *noteClient) CreateSnippet(ctx context.Context, userID int64, payload map[string]any) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/snippets", c.baseURL)
 
 	req, err := c.newJSONRequest(ctx, http.MethodPost, reqURL, userID, payload)
 	if err != nil {
@@ -209,12 +233,12 @@ func (c *noteClient) CreatePaste(ctx context.Context, userID int64, payload map[
 	if err != nil {
 		return nil, err
 	}
-	return c.decodeSingle(body)
+	return c.decodeSingle(ctx, body)
 }
 
-// GetPaste 获取单条笔记详情。
-func (c *noteClient) GetPaste(ctx context.Context, userID int64, pasteID string) (Paste, error) {
-	reqURL := fmt.Sprintf("%s/api/v1/pastes/%s", c.baseURL, pasteID)
+// GetSnippet 获取单条笔记详情。
+func (c *noteClient) GetSnippet(ctx context.Context, userID int64, snippetID string) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/snippets/%s", c.baseURL, snippetID)
 
 	req, err := c.newJSONRequest(ctx, http.MethodGet, reqURL, userID, nil)
 	if err != nil {
@@ -225,12 +249,12 @@ func (c *noteClient) GetPaste(ctx context.Context, userID int64, pasteID string)
 	if err != nil {
 		return nil, err
 	}
-	return c.decodeSingle(body)
+	return c.decodeSingle(ctx, body)
 }
 
-// UpdatePaste 更新一条已有笔记。
-func (c *noteClient) UpdatePaste(ctx context.Context, userID int64, pasteID string, payload map[string]any) (Paste, error) {
-	reqURL := fmt.Sprintf("%s/api/v1/pastes/%s", c.baseURL, pasteID)
+// UpdateSnippet 更新一条已有笔记。
+func (c *noteClient) UpdateSnippet(ctx context.Context, userID int64, snippetID string, payload map[string]any) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/snippets/%s", c.baseURL, snippetID)
 
 	req, err := c.newJSONRequest(ctx, http.MethodPut, reqURL, userID, payload)
 	if err != nil {
@@ -241,5 +265,181 @@ func (c *noteClient) UpdatePaste(ctx context.Context, userID int64, pasteID stri
 	if err != nil {
 		return nil, err
 	}
-	return c.decodeSingle(body)
+	return c.decodeSingle(ctx, body)
+}
+
+// --- 新增：片段扩展 ---
+
+func (c *noteClient) DeleteSnippet(ctx context.Context, userID int64, snippetID string) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/snippets/%s", c.baseURL, snippetID)
+	req, err := c.newJSONRequest(ctx, http.MethodDelete, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
+}
+
+func (c *noteClient) SearchSnippets(ctx context.Context, userID int64, rawQuery string) ([]Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/snippets/search?%s", c.baseURL, rawQuery)
+	req, err := c.newJSONRequest(ctx, http.MethodGet, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeList(ctx, body)
+}
+
+func (c *noteClient) GetPublicSnippet(ctx context.Context, snippetID string) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/public/snippets/%s", c.baseURL, snippetID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil { return nil, err }
+	req.Header.Set("Accept", "application/json")
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
+}
+
+func (c *noteClient) FavoriteSnippet(ctx context.Context, userID int64, snippetID string) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/snippets/%s/favorite", c.baseURL, snippetID)
+	req, err := c.newJSONRequest(ctx, http.MethodPost, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
+}
+
+func (c *noteClient) UnfavoriteSnippet(ctx context.Context, userID int64, snippetID string) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/snippets/%s/favorite", c.baseURL, snippetID)
+	req, err := c.newJSONRequest(ctx, http.MethodDelete, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
+}
+
+func (c *noteClient) CreateSnippetFromTemplate(ctx context.Context, userID int64, payload map[string]any) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/snippets/from-template", c.baseURL)
+	req, err := c.newJSONRequest(ctx, http.MethodPost, reqURL, userID, payload)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
+}
+
+// --- 新增：工作区列表 ---
+
+func (c *noteClient) GetSharedSnippets(ctx context.Context, userID int64) ([]Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/me/snippets/shared", c.baseURL)
+	req, err := c.newJSONRequest(ctx, http.MethodGet, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeList(ctx, body)
+}
+
+func (c *noteClient) GetFavoriteSnippets(ctx context.Context, userID int64) ([]Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/me/snippets/favorites", c.baseURL)
+	req, err := c.newJSONRequest(ctx, http.MethodGet, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeList(ctx, body)
+}
+
+// --- 新增：分组与标签 ---
+
+func (c *noteClient) GetGroups(ctx context.Context, userID int64) ([]Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/groups", c.baseURL)
+	req, err := c.newJSONRequest(ctx, http.MethodGet, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeList(ctx, body)
+}
+
+func (c *noteClient) CreateGroup(ctx context.Context, userID int64, payload map[string]any) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/groups", c.baseURL)
+	req, err := c.newJSONRequest(ctx, http.MethodPost, reqURL, userID, payload)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
+}
+
+func (c *noteClient) UpdateGroup(ctx context.Context, userID int64, groupID string, payload map[string]any) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/groups/%s", c.baseURL, groupID)
+	req, err := c.newJSONRequest(ctx, http.MethodPut, reqURL, userID, payload)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
+}
+
+func (c *noteClient) DeleteGroup(ctx context.Context, userID int64, groupID string) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/groups/%s", c.baseURL, groupID)
+	req, err := c.newJSONRequest(ctx, http.MethodDelete, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
+}
+
+func (c *noteClient) GetTags(ctx context.Context, userID int64) ([]Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/tags", c.baseURL)
+	req, err := c.newJSONRequest(ctx, http.MethodGet, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeList(ctx, body)
+}
+
+func (c *noteClient) CreateTag(ctx context.Context, userID int64, payload map[string]any) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/tags", c.baseURL)
+	req, err := c.newJSONRequest(ctx, http.MethodPost, reqURL, userID, payload)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
+}
+
+func (c *noteClient) DeleteTag(ctx context.Context, userID int64, tagID string) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/tags/%s", c.baseURL, tagID)
+	req, err := c.newJSONRequest(ctx, http.MethodDelete, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
+}
+
+// --- 新增：模板与上传 ---
+
+func (c *noteClient) GetTemplates(ctx context.Context, userID int64) ([]Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/templates", c.baseURL)
+	req, err := c.newJSONRequest(ctx, http.MethodGet, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeList(ctx, body)
+}
+
+func (c *noteClient) GetTemplate(ctx context.Context, userID int64, templateID string) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/templates/%s", c.baseURL, templateID)
+	req, err := c.newJSONRequest(ctx, http.MethodGet, reqURL, userID, nil)
+	if err != nil { return nil, err }
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
+}
+
+func (c *noteClient) UploadFile(ctx context.Context, userID int64, contentType string, reqBody io.Reader) (Snippet, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/uploads", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, reqBody)
+	if err != nil { return nil, err }
+	req.Header.Set("X-User-Id", fmt.Sprintf("%d", userID))
+	req.Header.Set("Accept", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	body, err := c.doRequest(req)
+	if err != nil { return nil, err }
+	return c.decodeSingle(ctx, body)
 }

@@ -24,7 +24,7 @@ func DefaultDialOptions(target string) []grpc.DialOption {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                10 * time.Second, // 每 10 秒发一次心跳
+			Time:                10 * time.Second, // 每 10 秒发一次心跳，快速检测断连
 			Timeout:             3 * time.Second,  // 3 秒没响应视为连接断开
 			PermitWithoutStream: true,             // 即使没有活跃 RPC 也保持心跳
 		}),

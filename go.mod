@@ -10,7 +10,7 @@ require (
 	github.com/luckysxx/common/errs v0.1.0
 	github.com/luckysxx/common/health v0.2.0
 	github.com/luckysxx/common/metrics v0.3.0
-	github.com/luckysxx/common/proto v0.3.0
+	github.com/luckysxx/common/proto v0.5.1
 	github.com/luckysxx/common/ratelimiter v0.2.0
 	github.com/luckysxx/common/redis v0.2.0
 	github.com/sony/gobreaker v1.0.0
@@ -27,6 +27,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
