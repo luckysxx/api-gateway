@@ -6,6 +6,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    volumes:
+      - ./configs:/app/configs:ro
     environment:
       - APP_ENV=development
       # 在这里使用环境变量把路由地址覆写为 Docker 内部的服务名！
