@@ -76,7 +76,7 @@ func main() {
 	dashboardHandler := handler.NewDashboardHandler(userClient, noteClientRest, log) // Dashbaord 当前未重构暂走REST
 	authHandler := handler.NewAuthHandler(authClient, log)
 	userHandler := handler.NewUserHandler(userClient, log)
-	
+
 	noteHandlerRestInstance := handler.NewNoteHandler(noteClientRest, log)
 	noteHandlerGrpcInstance := handler.NewNoteHandlerGrpc(noteClientGrpc, log)
 
@@ -128,31 +128,13 @@ func main() {
 	healthChecker.AddCheck("redis", func(ctx context.Context) error {
 		return redisClient.Ping(ctx).Err()
 	})
-	healthChecker.AddCheck("go-note", func(ctx context.Context) error {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Routes.GoNote+"/readyz", nil)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return err
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("go-note readiness returned status %d", resp.StatusCode)
-		}
-		return nil
-	})
-	healthChecker.AddCheck("go-chat", func(ctx context.Context) error {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Routes.GoChat+"/readyz", nil)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return err
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("go-chat readiness returned status %d", resp.StatusCode)
-		}
-		return nil
-	})
 	healthChecker.Register(r)
+
+	// 下游依赖单独暴露，避免单个业务服务抖动时把整个网关摘出流量。
+	dependencyChecker := health.NewChecker()
+	dependencyChecker.AddCheck("go-note", newHTTPReadyCheck(cfg.Routes.GoNote+"/readyz"))
+	dependencyChecker.AddCheck("go-chat", newHTTPReadyCheck(cfg.Routes.GoChat+"/readyz"))
+	registerDependencyHealthRoute(r, dependencyChecker)
 
 	r.GET("/metrics", metrics.GinMetricsHandler())
 	r.Use(metrics.GinMetrics())
@@ -310,4 +292,36 @@ func main() {
 		log.Fatal("API网关强制关闭", zap.Error(err))
 	}
 	log.Info("API Gateway 已关闭")
+}
+
+func newHTTPReadyCheck(url string) health.CheckFunc {
+	return func(ctx context.Context) error {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("downstream readiness returned status %d", resp.StatusCode)
+		}
+		return nil
+	}
+}
+
+func registerDependencyHealthRoute(r *gin.Engine, checker *health.Checker) {
+	r.GET("/healthz/deps", func(c *gin.Context) {
+		allHealthy, results := checker.Evaluate(c.Request.Context())
+		statusCode := http.StatusOK
+		status := "healthy"
+		if !allHealthy {
+			statusCode = http.StatusServiceUnavailable
+			status = "degraded"
+		}
+
+		c.JSON(statusCode, gin.H{
+			"status": status,
+			"checks": results,
+		})
+	})
 }
