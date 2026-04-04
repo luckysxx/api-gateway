@@ -6,16 +6,15 @@ require (
 	github.com/gin-contrib/cors v1.7.7
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/joho/godotenv v1.5.1
+	github.com/luckysxx/common/conf v0.2.0
 	github.com/luckysxx/common/errs v0.1.0
-	github.com/luckysxx/common/health v0.2.0
-	github.com/luckysxx/common/metrics v0.3.0
+	github.com/luckysxx/common/health v0.2.1
+	github.com/luckysxx/common/probe v0.1.1
 	github.com/luckysxx/common/proto v0.5.1
 	github.com/luckysxx/common/ratelimiter v0.2.0
-	github.com/luckysxx/common/redis v0.2.0
+	github.com/luckysxx/common/redis v0.2.1
 	github.com/sony/gobreaker v1.0.0
 	github.com/sony/gobreaker/v2 v2.4.0
-	github.com/spf13/viper v1.21.0
 	go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin v0.67.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0
 	go.opentelemetry.io/otel v1.42.0
@@ -27,7 +26,8 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/joho/godotenv v1.5.1 // indirect
+	github.com/luckysxx/common/metrics v0.3.1 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
@@ -38,6 +38,7 @@ require (
 	github.com/redis/go-redis/v9 v9.18.0 // indirect
 	github.com/shirou/gopsutil/v3 v3.24.5 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
+	github.com/spf13/viper v1.21.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
@@ -69,7 +70,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/luckysxx/common/logger v0.2.0
-	github.com/luckysxx/common/otel v0.1.0
+	github.com/luckysxx/common/otel v0.2.0
 	github.com/luckysxx/common/trace v0.1.0
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
