@@ -15,8 +15,8 @@ import (
 
 	"github.com/luckysxx/common/health"
 	"github.com/luckysxx/common/logger"
-	"github.com/luckysxx/common/metrics"
 	"github.com/luckysxx/common/otel"
+	"github.com/luckysxx/common/probe"
 	"github.com/luckysxx/common/ratelimiter"
 	"github.com/luckysxx/common/redis"
 
@@ -41,11 +41,7 @@ func main() {
 	defer log.Sync()
 
 	// 初始化 Redis
-	redisClient := redis.Init(redis.Config{
-		Addr:     cfg.Redis.Addr,
-		Password: cfg.Redis.Password,
-		DB:       cfg.Redis.DB,
-	}, log)
+	redisClient := redis.Init(cfg.Redis, log)
 	defer redisClient.Close()
 
 	// 初始化 gRPC 客户端（使用纯 host:port 格式的 gRPC 地址）
@@ -100,7 +96,7 @@ func main() {
 	}
 
 	// [Bug 5 修复] 初始化 OpenTelemetry — 必须在注册 otelgin 中间件之前
-	shutdown, err := otel.InitTracer(cfg.OTel.ServiceName, cfg.OTel.JaegerEndpoint)
+	shutdown, err := otel.InitTracer(cfg.OTel)
 	if err != nil {
 		log.Fatal("初始化 OpenTelemetry 失败", zap.Error(err))
 	}
@@ -123,21 +119,16 @@ func main() {
 		c.Next()
 	})
 
-	// 健康检查（注册在所有中间件之前，避免被限流/鉴权拦截）
-	healthChecker := health.NewChecker()
-	healthChecker.AddCheck("redis", func(ctx context.Context) error {
-		return redisClient.Ping(ctx).Err()
-	})
-	healthChecker.Register(r)
+	// 探针端点：/healthz, /readyz, /metrics（注册在所有中间件之前）
+	probe.Register(r, log,
+		probe.WithRedis(redisClient),
+	)
 
 	// 下游依赖单独暴露，避免单个业务服务抖动时把整个网关摘出流量。
 	dependencyChecker := health.NewChecker()
 	dependencyChecker.AddCheck("go-note", newHTTPReadyCheck(cfg.Routes.GoNote+"/readyz"))
 	dependencyChecker.AddCheck("go-chat", newHTTPReadyCheck(cfg.Routes.GoChat+"/readyz"))
 	registerDependencyHealthRoute(r, dependencyChecker)
-
-	r.GET("/metrics", metrics.GinMetricsHandler())
-	r.Use(metrics.GinMetrics())
 
 	// [CORS 防御层] — 从配置中读取白名单
 	if len(cfg.Server.CorsOrigins) > 0 {
