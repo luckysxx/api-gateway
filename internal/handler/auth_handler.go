@@ -86,8 +86,14 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	}
 	userID := val.(int64)
 
+	// 从请求体中读取 device_id（兼容旧客户端：不提供也不报错）
+	var req dto.LogoutRequest
+	_ = c.ShouldBindJSON(&req)
+
 	grpcCtx := grpcclient.WithUserID(c.Request.Context(), userID)
-	_, err := h.authClient.Logout(grpcCtx, &authpb.LogoutRequest{})
+	_, err := h.authClient.Logout(grpcCtx, &authpb.LogoutRequest{
+		DeviceId: req.DeviceId,
+	})
 	if err != nil {
 		commonlogger.Ctx(grpcCtx, h.log).Error("用户退出登录失败", zap.Int64("userID", userID), zap.Error(err))
 		response.Error(c, validator.ConvertToHTTPError(err))

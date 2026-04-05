@@ -13,3 +13,7 @@ type LoginResponse struct {
 	UserID       int64  `json:"user_id"`
 	Username     string `json:"username"`
 }
+
+type LogoutRequest struct {
+	DeviceId string `json:"device_id"`
+}
