@@ -23,13 +23,16 @@ import (
 	"api-gateway/internal/auth"
 	"api-gateway/internal/config"
 	"api-gateway/internal/grpcclient"
+	"api-gateway/internal/gwproxy"
 	"api-gateway/internal/handler"
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/middleware/ratelimit"
 	"api-gateway/internal/proxy"
-	"api-gateway/internal/restclient"
 
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 func main() {
@@ -53,29 +56,28 @@ func main() {
 	if err != nil {
 		log.Fatal("初始化 User gRPC 客户端失败", zap.Error(err))
 	}
-	// 初始化 REST 客户端（使用 http:// 格式的 HTTP 地址）
-	noteClientRest := restclient.NewNoteClient(cfg.Routes.GoNote, log)
 
-	// [双轨制] 初始化 gRPC 客户端
+	// 初始化 Note gRPC 客户端（用于公开端点等不走 gRPC-Gateway 的场景）
 	noteClientGrpc, err := grpcclient.NewNoteClient(cfg.Routes.GoNoteGRPC)
 	if err != nil {
-		log.Error("初始化 Note gRPC 客户端失败", zap.Error(err))
+		log.Fatal("初始化 Note gRPC 客户端失败", zap.Error(err))
+	}
+
+	// 初始化 gRPC-Gateway 反向代理（自动代理所有 CRUD 路由）
+	noteMux, err := gwproxy.NewNoteMux(context.Background(), cfg.Routes.GoNoteGRPC)
+	if err != nil {
+		log.Fatal("初始化 Note gRPC-Gateway 失败", zap.Error(err))
 	}
 
 	chatProxy := proxy.NewReverseProxy(cfg.Routes.GoChat)
 
-	// ====== [双轨制协议开关] ======
-	// 控制从网关流向 note-service 的请求是走 gRPC 还是 HTTP REST
-	useGrpcForNotes := true
-
 	// 初始化 handler
-	dashboardHandler := handler.NewDashboardHandler(userClient, noteClientRest, log) // Dashbaord 当前未重构暂走REST
-	authHandler := handler.NewAuthHandler(authClient, log)
-	userHandler := handler.NewUserHandler(userClient, log)
-
-	noteHandlerRestInstance := handler.NewNoteHandler(noteClientRest, log)
-	noteHandlerGrpcInstance := handler.NewNoteHandlerGrpc(noteClientGrpc, log)
-
+	configHandler := handler.NewConfigHandler(cfg.Client)
+	dashboardHandler := handler.NewDashboardHandler(userClient, noteClientGrpc, log)
+	authHandler := handler.NewAuthHandler(authClient, cfg.SSOCookie, log)
+	userHandler := handler.NewUserHandler(userClient, cfg.SSOCookie, log)
+	publicNoteHandler := handler.NewPublicNoteHandler(noteClientGrpc, log)
+	uploadHandler := handler.NewUploadHandler(noteClientGrpc, log)
 	chatHandler := handler.NewChatHandler(chatProxy)
 
 	// 初始化限流器
@@ -126,7 +128,7 @@ func main() {
 
 	// 下游依赖单独暴露，避免单个业务服务抖动时把整个网关摘出流量。
 	dependencyChecker := health.NewChecker()
-	dependencyChecker.AddCheck("go-note", newHTTPReadyCheck(cfg.Routes.GoNote+"/readyz"))
+	dependencyChecker.AddCheck("go-note", newGRPCReadyCheck(cfg.Routes.GoNoteGRPC))
 	dependencyChecker.AddCheck("go-chat", newHTTPReadyCheck(cfg.Routes.GoChat+"/readyz"))
 	registerDependencyHealthRoute(r, dependencyChecker)
 
@@ -135,7 +137,7 @@ func main() {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins:     cfg.Server.CorsOrigins,
 			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-			AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-Request-Id"},
+			AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-Request-Id", "X-Share-Password"},
 			ExposeHeaders:    []string{"Content-Length", "X-Request-Id"},
 			AllowCredentials: true,
 			MaxAge:           12 * time.Hour,
@@ -153,14 +155,17 @@ func main() {
 	// Layer 2: BBR 自适应限流 - 所有请求都过
 	api.Use(ratelimit.BBRMiddleware(BBRLimiter, log))
 	// 公共接口（无需 JWT 鉴权）
+	api.GET("/config/client", configHandler.GetClientConfig)
 	api.POST("/users/register", userHandler.Register)
 	api.POST("/users/login", authHandler.Login)
 	api.POST("/users/refresh", authHandler.RefreshToken)
-	if useGrpcForNotes {
-		api.GET("/notes/public/snippets/:id", noteHandlerGrpcInstance.GetPublic)
-	} else {
-		api.GET("/notes/public/snippets/:id", noteHandlerRestInstance.GetPublic)
-	}
+	api.POST("/users/sso/exchange", authHandler.ExchangeSSO)
+	api.POST("/users/phone/code", authHandler.SendPhoneCode)
+	api.POST("/users/phone/entry", authHandler.PhoneAuthEntry)
+	api.POST("/users/phone/password-login", authHandler.PhonePasswordLogin)
+	// 公开笔记端点（无需鉴权）
+	api.GET("/notes/public/snippets/:id", publicNoteHandler.GetPublic)
+	api.GET("/notes/public/shares/:token", publicNoteHandler.GetPublicShare)
 
 	{
 		// 用户模块路由组（需 JWT 鉴权）
@@ -173,80 +178,65 @@ func main() {
 		usersGroup.GET("/dashboard", dashboardHandler.GetDashboard)
 		usersGroup.GET("/me/profile", userHandler.GetProfile)
 		usersGroup.PUT("/me/profile", userHandler.UpdateProfile)
+		usersGroup.POST("/password/change", userHandler.ChangePassword)
+		usersGroup.POST("/password/set", userHandler.SetPassword)
+		usersGroup.POST("/email/bind", userHandler.BindEmail)
 		usersGroup.POST("/logout", authHandler.Logout)
+		usersGroup.POST("/logout-all", userHandler.LogoutAllSessions)
 	}
 	{
 		// 笔记模块路由组（需 JWT 鉴权）
+		// gRPC-Gateway 自动代理所有 CRUD、分组、标签、模板路由
 		notesGroup := api.Group("/notes")
 		notesGroup.Use(ratelimit.RouteRateLimit(RouteLimiter, 200, 10*time.Second, log))
 		notesGroup.Use(middleware.JWTAuth(jwtManager, log))
 		notesGroup.Use(ratelimit.UserRateLimit(UserLimiter, 20, time.Second, log))
 
-		if useGrpcForNotes {
-			notesGroup.GET("/me/snippets", noteHandlerGrpcInstance.ListMine)
-			notesGroup.POST("/snippets", noteHandlerGrpcInstance.Create)
-			notesGroup.GET("/snippets/:id", noteHandlerGrpcInstance.Get)
-			notesGroup.PUT("/snippets/:id", noteHandlerGrpcInstance.Update)
+		// 文件上传保留为手写 handler（二进制流不适合 JSON gRPC-Gateway）
+		notesGroup.POST("/uploads", uploadHandler.Upload)
 
-			// 片段扩展
-			notesGroup.DELETE("/snippets/:id", noteHandlerGrpcInstance.Delete)
-			notesGroup.GET("/snippets/search", noteHandlerGrpcInstance.Search)
-			notesGroup.POST("/snippets/:id/favorite", noteHandlerGrpcInstance.Favorite)
-			notesGroup.DELETE("/snippets/:id/favorite", noteHandlerGrpcInstance.Unfavorite)
-			notesGroup.POST("/snippets/from-template", noteHandlerGrpcInstance.CreateFromTemplate)
+		// gRPC-Gateway 透传路由。显式按方法注册，避免和手写上传路由冲突。
+		noteGatewayHandler := gin.WrapH(gwproxy.WrapHandler(noteMux))
 
-			// 工作区列表
-			notesGroup.GET("/me/snippets/recent", noteHandlerGrpcInstance.ListRecent)
-			notesGroup.GET("/me/snippets/shared", noteHandlerGrpcInstance.ListShared)
-			notesGroup.GET("/me/snippets/favorites", noteHandlerGrpcInstance.ListFavorites)
+		notesGroup.GET("/me/snippets", noteGatewayHandler)
+		notesGroup.GET("/me/snippets/recent", noteGatewayHandler)
+		notesGroup.GET("/me/snippets/shared", noteGatewayHandler)
+		notesGroup.GET("/me/snippets/favorites", noteGatewayHandler)
+		notesGroup.GET("/snippets/search", noteGatewayHandler)
+		notesGroup.GET("/snippets/:snippet_id", noteGatewayHandler)
+		notesGroup.GET("/snippets/:snippet_id/ai", noteGatewayHandler)
+		notesGroup.GET("/groups", noteGatewayHandler)
+		notesGroup.GET("/groups/:group_id", noteGatewayHandler)
+		notesGroup.GET("/tags", noteGatewayHandler)
+		notesGroup.GET("/templates", noteGatewayHandler)
+		notesGroup.GET("/templates/:template_id", noteGatewayHandler)
 
-			// 分组与标签
-			notesGroup.GET("/groups", noteHandlerGrpcInstance.GetGroups)
-			notesGroup.POST("/groups", noteHandlerGrpcInstance.CreateGroup)
-			notesGroup.PUT("/groups/:id", noteHandlerGrpcInstance.UpdateGroup)
-			notesGroup.DELETE("/groups/:id", noteHandlerGrpcInstance.DeleteGroup)
+		notesGroup.POST("/snippets", noteGatewayHandler)
+		notesGroup.POST("/snippets/from-template", noteGatewayHandler)
+		notesGroup.POST("/snippets/from-share", noteGatewayHandler)
+		notesGroup.POST("/snippets/:snippet_id/favorite", noteGatewayHandler)
+		notesGroup.POST("/groups", noteGatewayHandler)
+		notesGroup.POST("/tags", noteGatewayHandler)
+		notesGroup.POST("/templates", noteGatewayHandler)
+		notesGroup.POST("/uploads/presign", noteGatewayHandler)
+		notesGroup.POST("/uploads/complete", noteGatewayHandler)
+		notesGroup.POST("/shares", noteGatewayHandler)
 
-			notesGroup.GET("/tags", noteHandlerGrpcInstance.GetTags)
-			notesGroup.POST("/tags", noteHandlerGrpcInstance.CreateTag)
-			notesGroup.DELETE("/tags/:id", noteHandlerGrpcInstance.DeleteTag)
+		notesGroup.PUT("/snippets/:snippet_id", noteGatewayHandler)
+		notesGroup.PUT("/snippets/:snippet_id/tags", noteGatewayHandler)
+		notesGroup.PUT("/snippets/:snippet_id/move", noteGatewayHandler)
+		notesGroup.PUT("/groups/:group_id", noteGatewayHandler)
+		notesGroup.PUT("/tags/:tag_id", noteGatewayHandler)
+		notesGroup.PUT("/templates/:template_id", noteGatewayHandler)
 
-			// 模板与上传
-			notesGroup.GET("/templates", noteHandlerGrpcInstance.GetTemplates)
-			notesGroup.GET("/templates/:id", noteHandlerGrpcInstance.GetTemplate)
-			notesGroup.POST("/uploads", noteHandlerGrpcInstance.Upload)
-		} else {
-			notesGroup.GET("/me/snippets", noteHandlerRestInstance.ListMine)
-			notesGroup.POST("/snippets", noteHandlerRestInstance.Create)
-			notesGroup.GET("/snippets/:id", noteHandlerRestInstance.Get)
-			notesGroup.PUT("/snippets/:id", noteHandlerRestInstance.Update)
+		notesGroup.DELETE("/snippets/:snippet_id", noteGatewayHandler)
+		notesGroup.DELETE("/snippets/:snippet_id/favorite", noteGatewayHandler)
+		notesGroup.DELETE("/groups/:group_id", noteGatewayHandler)
+		notesGroup.DELETE("/tags/:tag_id", noteGatewayHandler)
+		notesGroup.DELETE("/templates/:template_id", noteGatewayHandler)
+		notesGroup.DELETE("/shares/:share_id", noteGatewayHandler)
 
-			// 片段扩展
-			notesGroup.DELETE("/snippets/:id", noteHandlerRestInstance.Delete)
-			notesGroup.GET("/snippets/search", noteHandlerRestInstance.Search)
-			notesGroup.POST("/snippets/:id/favorite", noteHandlerRestInstance.Favorite)
-			notesGroup.DELETE("/snippets/:id/favorite", noteHandlerRestInstance.Unfavorite)
-			notesGroup.POST("/snippets/from-template", noteHandlerRestInstance.CreateFromTemplate)
-
-			// 工作区列表
-			notesGroup.GET("/me/snippets/recent", noteHandlerRestInstance.ListRecent)
-			notesGroup.GET("/me/snippets/shared", noteHandlerRestInstance.ListShared)
-			notesGroup.GET("/me/snippets/favorites", noteHandlerRestInstance.ListFavorites)
-
-			// 分组与标签
-			notesGroup.GET("/groups", noteHandlerRestInstance.GetGroups)
-			notesGroup.POST("/groups", noteHandlerRestInstance.CreateGroup)
-			notesGroup.PUT("/groups/:id", noteHandlerRestInstance.UpdateGroup)
-			notesGroup.DELETE("/groups/:id", noteHandlerRestInstance.DeleteGroup)
-
-			notesGroup.GET("/tags", noteHandlerRestInstance.GetTags)
-			notesGroup.POST("/tags", noteHandlerRestInstance.CreateTag)
-			notesGroup.DELETE("/tags/:id", noteHandlerRestInstance.DeleteTag)
-
-			// 模板与上传
-			notesGroup.GET("/templates", noteHandlerRestInstance.GetTemplates)
-			notesGroup.GET("/templates/:id", noteHandlerRestInstance.GetTemplate)
-			notesGroup.POST("/uploads", noteHandlerRestInstance.Upload)
-		}
+		notesGroup.GET("/shares/my", noteGatewayHandler)
 	}
 	{
 		chatGroup := api.Group("/chat")
@@ -295,6 +285,27 @@ func newHTTPReadyCheck(url string) health.CheckFunc {
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("downstream readiness returned status %d", resp.StatusCode)
+		}
+		return nil
+	}
+}
+
+func newGRPCReadyCheck(addr string) health.CheckFunc {
+	return func(ctx context.Context) error {
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+
+		resp, err := healthgrpc.NewHealthClient(conn).Check(ctx, &healthgrpc.HealthCheckRequest{
+			Service: "note.NoteService",
+		})
+		if err != nil {
+			return err
+		}
+		if resp.GetStatus() != healthgrpc.HealthCheckResponse_SERVING {
+			return fmt.Errorf("downstream grpc readiness returned status %s", resp.GetStatus().String())
 		}
 		return nil
 	}

@@ -10,19 +10,23 @@ import (
 	"api-gateway/internal/auth"
 )
 
+var publicRouteWhitelist = map[string]struct{}{
+	"/api/v1/config/client":              {},
+	"/api/v1/users/register":             {},
+	"/api/v1/users/login":                {},
+	"/api/v1/users/refresh":              {},
+	"/api/v1/users/sso/exchange":         {},
+	"/api/v1/users/phone/code":           {},
+	"/api/v1/users/phone/entry":          {},
+	"/api/v1/users/phone/password-login": {},
+}
+
 // JWTAuth 鉴权中间件工厂函数
 // 依赖注入 JWTManager 和 Logger
 func JWTAuth(jwtManager *auth.JWTManager, logger *zap.Logger) gin.HandlerFunc {
-	// 定义免鉴权接口白名单 (直接透传给下游)
-	whitelist := map[string]bool{
-		"/api/v1/users/login":    true,
-		"/api/v1/users/register": true,
-		"/api/v1/users/refresh":  true,
-	}
-
 	return func(c *gin.Context) {
 		// 0. 白名单放行机制：如果是登录注册，直接免去 JWT 校验
-		if whitelist[c.Request.URL.Path] {
+		if _, ok := publicRouteWhitelist[c.Request.URL.Path]; ok {
 			c.Next()
 			return
 		}

@@ -12,7 +12,7 @@ var (
 	ErrInvalidOrExpiredToken   = errors.New("invalid or expired token")
 )
 
-// ExtractBearerToken parses and validates an Authorization header in Bearer format.
+// ExtractBearerToken 解析并校验 Bearer 格式的 Authorization 请求头。
 func ExtractBearerToken(authHeader string) (string, error) {
 	authHeader = strings.TrimSpace(authHeader)
 	if authHeader == "" {
@@ -32,7 +32,7 @@ func ExtractBearerToken(authHeader string) (string, error) {
 	return token, nil
 }
 
-// AuthenticateBearerToken extracts token from Authorization header and returns user ID.
+// AuthenticateBearerToken 从 Authorization 请求头中提取令牌并返回用户 ID。
 func AuthenticateBearerToken(jwtManager *JWTManager, authHeader string) (int64, error) {
 	if jwtManager == nil {
 		return 0, errors.New("jwt manager is nil")

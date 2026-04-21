@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"api-gateway/internal/config"
 	"api-gateway/internal/grpcclient"
 	"api-gateway/internal/handler/dto"
 	"api-gateway/internal/handler/response"
@@ -16,12 +17,17 @@ import (
 // UserHandler 负责处理网关侧的用户相关请求。
 type UserHandler struct {
 	userClient userpb.UserServiceClient
+	ssoCookie  *ssoCookieManager
 	log        *zap.Logger
 }
 
 // NewUserHandler 创建一个用户 Handler。
-func NewUserHandler(userClient userpb.UserServiceClient, log *zap.Logger) *UserHandler {
-	return &UserHandler{userClient: userClient, log: log}
+func NewUserHandler(userClient userpb.UserServiceClient, cookieCfg config.SSOCookieConfig, log *zap.Logger) *UserHandler {
+	return &UserHandler{
+		userClient: userClient,
+		ssoCookie:  newSSOCookieManager(cookieCfg),
+		log:        log,
+	}
 }
 
 // Register 用户注册
@@ -36,6 +42,7 @@ func (h *UserHandler) Register(c *gin.Context) {
 	}
 
 	user, err := h.userClient.Register(c.Request.Context(), &userpb.RegisterRequest{
+		Phone:    req.Phone,
 		Username: req.Username,
 		Password: req.Password,
 		Email:    req.Email,
@@ -55,12 +62,11 @@ func (h *UserHandler) Register(c *gin.Context) {
 // GetProfile 获取当前登录用户的个人资料
 func (h *UserHandler) GetProfile(c *gin.Context) {
 	// 从网关 JWT 中间件获取身份
-	val, exists := c.Get("userID")
-	if !exists {
+	userID, ok := getAuthenticatedUserID(c)
+	if !ok {
 		response.Unauthorized(c, "未授权")
 		return
 	}
-	userID := val.(int64)
 
 	grpcCtx := grpcclient.WithUserID(c.Request.Context(), userID)
 	resp, err := h.userClient.GetProfile(grpcCtx, &userpb.GetProfileRequest{
@@ -84,12 +90,11 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 
 // UpdateProfile 修改个人资料
 func (h *UserHandler) UpdateProfile(c *gin.Context) {
-	val, exists := c.Get("userID")
-	if !exists {
+	userID, ok := getAuthenticatedUserID(c)
+	if !ok {
 		response.Unauthorized(c, "未授权")
 		return
 	}
-	userID := val.(int64)
 
 	var req dto.UpdateProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -121,4 +126,137 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 		Birthday:  resp.Birthday,
 		UpdatedAt: resp.UpdatedAt,
 	})
+}
+
+// ChangePassword 修改当前登录用户密码。
+func (h *UserHandler) ChangePassword(c *gin.Context) {
+	userID, ok := getAuthenticatedUserID(c)
+	if !ok {
+		response.Unauthorized(c, "未授权")
+		return
+	}
+
+	var req dto.ChangePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errMsg := validator.TranslateValidationError(err)
+		commonlogger.Ctx(c.Request.Context(), h.log).Warn("参数验证失败", zap.Error(err), zap.String("message", errMsg))
+		response.BadRequest(c, errMsg)
+		return
+	}
+
+	grpcCtx := grpcclient.WithUserID(c.Request.Context(), userID)
+	resp, err := h.userClient.ChangePassword(grpcCtx, &userpb.ChangePasswordRequest{
+		OldPassword: req.OldPassword,
+		NewPassword: req.NewPassword,
+	})
+	if err != nil {
+		commonlogger.Ctx(grpcCtx, h.log).Error("修改密码失败", zap.Int64("userID", userID), zap.Error(err))
+		response.Error(c, validator.ConvertToHTTPError(err))
+		return
+	}
+
+	h.ssoCookie.clear(c)
+	response.Success(c, &dto.ChangePasswordResponse{
+		UserID:  resp.UserId,
+		Message: resp.Message,
+	})
+}
+
+// LogoutAllSessions 让当前用户的全部登录态失效。
+func (h *UserHandler) LogoutAllSessions(c *gin.Context) {
+	userID, ok := getAuthenticatedUserID(c)
+	if !ok {
+		response.Unauthorized(c, "未授权")
+		return
+	}
+
+	grpcCtx := grpcclient.WithUserID(c.Request.Context(), userID)
+	resp, err := h.userClient.LogoutAllSessions(grpcCtx, &userpb.LogoutAllSessionsRequest{})
+	if err != nil {
+		commonlogger.Ctx(grpcCtx, h.log).Error("退出全部设备失败", zap.Int64("userID", userID), zap.Error(err))
+		response.Error(c, validator.ConvertToHTTPError(err))
+		return
+	}
+
+	h.ssoCookie.clear(c)
+	response.Success(c, &dto.LogoutAllSessionsResponse{
+		UserID:  resp.UserId,
+		Message: resp.Message,
+	})
+}
+
+// BindEmail 绑定当前登录用户的邮箱身份。
+func (h *UserHandler) BindEmail(c *gin.Context) {
+	userID, ok := getAuthenticatedUserID(c)
+	if !ok {
+		response.Unauthorized(c, "未授权")
+		return
+	}
+
+	var req dto.BindEmailRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errMsg := validator.TranslateValidationError(err)
+		commonlogger.Ctx(c.Request.Context(), h.log).Warn("参数验证失败", zap.Error(err), zap.String("message", errMsg))
+		response.BadRequest(c, errMsg)
+		return
+	}
+
+	grpcCtx := grpcclient.WithUserID(c.Request.Context(), userID)
+	resp, err := h.userClient.BindEmail(grpcCtx, &userpb.BindEmailRequest{
+		Email: req.Email,
+	})
+	if err != nil {
+		commonlogger.Ctx(grpcCtx, h.log).Error("绑定邮箱失败", zap.Int64("userID", userID), zap.Error(err))
+		response.Error(c, validator.ConvertToHTTPError(err))
+		return
+	}
+
+	response.Success(c, &dto.BindEmailResponse{
+		UserID:  resp.UserId,
+		Email:   resp.Email,
+		Message: resp.Message,
+	})
+}
+
+// SetPassword 为当前登录用户设置本地密码。
+func (h *UserHandler) SetPassword(c *gin.Context) {
+	userID, ok := getAuthenticatedUserID(c)
+	if !ok {
+		response.Unauthorized(c, "未授权")
+		return
+	}
+
+	var req dto.SetPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errMsg := validator.TranslateValidationError(err)
+		commonlogger.Ctx(c.Request.Context(), h.log).Warn("参数验证失败", zap.Error(err), zap.String("message", errMsg))
+		response.BadRequest(c, errMsg)
+		return
+	}
+
+	grpcCtx := grpcclient.WithUserID(c.Request.Context(), userID)
+	resp, err := h.userClient.SetPassword(grpcCtx, &userpb.SetPasswordRequest{
+		NewPassword: req.NewPassword,
+	})
+	if err != nil {
+		commonlogger.Ctx(grpcCtx, h.log).Error("设置密码失败", zap.Int64("userID", userID), zap.Error(err))
+		response.Error(c, validator.ConvertToHTTPError(err))
+		return
+	}
+
+	h.ssoCookie.clear(c)
+	response.Success(c, &dto.SetPasswordResponse{
+		UserID:  resp.UserId,
+		Message: resp.Message,
+	})
+}
+
+func getAuthenticatedUserID(c *gin.Context) (int64, bool) {
+	val, exists := c.Get("userID")
+	if !exists {
+		return 0, false
+	}
+
+	userID, ok := val.(int64)
+	return userID, ok
 }

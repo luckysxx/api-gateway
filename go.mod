@@ -6,11 +6,11 @@ require (
 	github.com/gin-contrib/cors v1.7.7
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/luckysxx/common/conf v0.2.0
-	github.com/luckysxx/common/errs v0.1.0
+	github.com/luckysxx/common/conf v0.2.1
+	github.com/luckysxx/common/errs v0.1.2
 	github.com/luckysxx/common/health v0.2.1
-	github.com/luckysxx/common/probe v0.1.1
-	github.com/luckysxx/common/proto v0.5.1
+	github.com/luckysxx/common/probe v0.1.2
+	github.com/luckysxx/common/proto v1.10.0
 	github.com/luckysxx/common/ratelimiter v0.2.0
 	github.com/luckysxx/common/redis v0.2.1
 	github.com/sony/gobreaker v1.0.0
@@ -65,7 +65,7 @@ require (
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
@@ -101,8 +101,8 @@ require (
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260316172706-e463d84ca32d // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260311181403-84a4fc48630c // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11 // indirect
 )

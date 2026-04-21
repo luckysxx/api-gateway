@@ -20,29 +20,35 @@ import (
 //
 // target 用于标识下游服务，每个 target 有独立的熔断器状态。
 func DefaultDialOptions(target string) []grpc.DialOption {
+	const maxMsgSize = 16 << 20 // 16 MB — 需要支持最大 10MB 文件上传 + protobuf 编码开销
+
 	return []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(maxMsgSize),
+			grpc.MaxCallSendMsgSize(maxMsgSize),
+		),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                10 * time.Second, // 每 10 秒发一次心跳，快速检测断连
 			Timeout:             3 * time.Second,  // 3 秒没响应视为连接断开
 			PermitWithoutStream: true,             // 即使没有活跃 RPC 也保持心跳
 		}),
-		grpc.WithDefaultServiceConfig(retryPolicy()),
+		grpc.WithDefaultServiceConfig(serviceConfig()),
 		// 熔断器拦截器 — 在重试之前判断是否需要快速失败
 		grpc.WithChainUnaryInterceptor(CircuitBreakerInterceptor(target)),
 	}
 }
 
-// retryPolicy 返回 gRPC 内置重试策略的 JSON 配置。
+// serviceConfig 返回 gRPC 客户端的 Service Config JSON 配置。
 //
-// 策略说明：
-//   - 最多重试 3 次（含首次调用共 4 次）
-//   - 初始退避 100ms，最大退避 1s，退避因子 2.0（指数退避）
-//   - 仅在 UNAVAILABLE 和 DEADLINE_EXCEEDED 时重试
-//   - gRPC 自动判断幂等性：只有被标记为 WaitForReady 或服务端返回可重试状态码时才重试
-func retryPolicy() string {
+// 包含：
+//   - round_robin 负载均衡：配合 K8s Headless Service，让 gRPC 将请求轮询分发到所有后端 Pod，
+//     解决 HTTP/2 长连接导致 L4 负载均衡失效的经典问题。
+//   - 重试策略：最多重试 3 次（含首次调用共 4 次），指数退避，仅对 UNAVAILABLE 和 DEADLINE_EXCEEDED 生效。
+func serviceConfig() string {
 	return `{
+		"loadBalancingConfig": [{"round_robin": {}}],
 		"methodConfig": [{
 			"name": [{"service": ""}],
 			"timeout": "3s",

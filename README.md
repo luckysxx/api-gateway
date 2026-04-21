@@ -15,7 +15,7 @@
 ```text
 api-gateway/
 ├── cmd/server/                    # 服务启动入口
-├── configs/                       # 本地配置文件
+├── .env.example                   # 环境变量模板
 ├── internal/
 │   ├── auth/                      # JWT 工具
 │   ├── config/                    # 配置加载
@@ -56,7 +56,7 @@ api-gateway/
 go run cmd/server/main.go
 ```
 
-默认监听配置文件中的服务端口。
+默认监听环境变量中的服务端口。
 
 ### Docker
 
@@ -66,8 +66,8 @@ docker-compose up -d --build
 
 ## Configuration
 
-- 主配置文件位于 `configs/config.yaml`
-- 建议通过环境变量覆盖本地地址、密钥和容器部署参数
+- 运行配置统一通过环境变量注入
+- 本地开发请从 `.env.example` 复制出 `.env`
 - 提交代码前请确认敏感配置未写入仓库
 
 ## Git Hygiene

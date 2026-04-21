@@ -8,10 +8,10 @@ import (
 	"api-gateway/internal/handler/dto"
 	"api-gateway/internal/handler/response"
 	"api-gateway/internal/handler/validator"
-	"api-gateway/internal/restclient"
 
 	"github.com/gin-gonic/gin"
 	commonlogger "github.com/luckysxx/common/logger"
+	notepb "github.com/luckysxx/common/proto/note"
 	userpb "github.com/luckysxx/common/proto/user"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -19,13 +19,13 @@ import (
 
 type DashboardHandler struct {
 	userClient userpb.UserServiceClient
-	noteClient restclient.NoteClient
+	noteClient notepb.NoteServiceClient
 	log        *zap.Logger
 }
 
 func NewDashboardHandler(
 	userClient userpb.UserServiceClient,
-	noteClient restclient.NoteClient,
+	noteClient notepb.NoteServiceClient,
 	log *zap.Logger,
 ) *DashboardHandler {
 	return &DashboardHandler{
@@ -46,8 +46,8 @@ func (h *DashboardHandler) GetDashboard(c *gin.Context) {
 
 	// 定义网关专用的超级 DTO 面板结构
 	var dashResponse struct {
-		Profile *dto.GetProfileResponse `json:"profile"`
-		Snippets []restclient.Snippet   `json:"recent_snippets"`
+		Profile  *dto.GetProfileResponse    `json:"profile"`
+		Snippets []*notepb.SnippetResponse  `json:"recent_snippets"`
 	}
 
 	// 第一部分：创建一个带 2 秒超时的 并发上下文，并注入网关身份信息
@@ -76,18 +76,21 @@ func (h *DashboardHandler) GetDashboard(c *gin.Context) {
 		return nil
 	})
 
-	// 第三部分：并发任务 B (走 HTTP 获取边缘笔记数据)
+	// 第三部分：并发任务 B (走 gRPC 获取笔记数据)
 	eg.Go(func() error {
-		snippets, err := h.noteClient.GetRecentSnippets(egCtx, userID)
+		resp, err := h.noteClient.ListRecentSnippets(egCtx, &notepb.ListSnippetsRequest{})
 		if err != nil {
 			// 核心：部分降级
 			// 发生错误千万不要 return err，否则整个请求 500 崩溃
 			// 只记录 Warn 日志，返回一个空数组给前台兜底
 			commonlogger.Ctx(egCtx, h.log).Warn("Dashboard-获取边缘笔记链路故障，已执行降级策略", zap.Error(err))
-			dashResponse.Snippets = []restclient.Snippet{}
+			dashResponse.Snippets = []*notepb.SnippetResponse{}
 			return nil
 		}
-		dashResponse.Snippets = snippets
+		dashResponse.Snippets = resp.Snippets
+		if dashResponse.Snippets == nil {
+			dashResponse.Snippets = []*notepb.SnippetResponse{}
+		}
 		return nil
 	})
 
